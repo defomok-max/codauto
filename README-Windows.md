@@ -2,31 +2,61 @@
 
 PowerShell-меню для управления несколькими аккаунтами Codex CLI на Windows.
 
-## Установка
+## Нормальная установка
 
-1. Распакуйте архив `codex-account-manager-windows.zip`.
-2. В PowerShell откройте папку архива.
-3. Запустите:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
-```
-
-После установки откройте новое окно PowerShell/Windows Terminal и запустите:
+1. Распакуйте `codex-account-manager-windows.zip` в любую папку.
+2. Дважды кликните `install.cmd`.
+3. Откройте новое окно PowerShell/Windows Terminal.
+4. Запустите:
 
 ```powershell
 codex-account
 ```
 
-Можно запускать без установки:
+Инсталлятор делает всё сам:
+
+- ставит файлы в `%LOCALAPPDATA%\CodexAccountManager`;
+- добавляет команду `codex-account` в User PATH;
+- создаёт ярлык в Start Menu;
+- создаёт ярлык на рабочем столе;
+- создаёт `uninstall.cmd` для удаления;
+- не трогает сохранённые аккаунты в `%USERPROFILE%\.codex\accounts` при удалении.
+
+## Управление установкой
 
 ```powershell
-.\codex-account.cmd
+.\install.cmd       # установка двойным кликом или из терминала
+.\repair.cmd        # переустановка/починка PATH и ярлыков
+.\uninstall.cmd     # удаление программы
+```
+
+Продвинутый режим:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Mode Install
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Mode Repair
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Mode Uninstall
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Mode Status
+```
+
+Опции:
+
+```powershell
+-NoDesktopShortcut      не создавать ярлык на рабочем столе
+-NoStartMenuShortcut    не создавать ярлык в Start Menu
+-NoPath                 не добавлять папку установки в User PATH
+-Quiet                  меньше вывода
 ```
 
 ## Главное меню
 
-В меню можно управлять аккаунтами:
+Запуск:
+
+```powershell
+codex-account
+```
+
+В меню можно:
 
 1. Добавить аккаунт через `codex login`.
 2. Сохранить текущий `%USERPROFILE%\.codex\auth.json` как профиль.
@@ -34,7 +64,7 @@ codex-account
 4. Запустить Codex с авто-ротацией при лимите.
 5. Показать аккаунты.
 6. Удалить аккаунт.
-7. Диагностика окружения.
+7. Проверить окружение.
 
 ## Быстрый старт
 
