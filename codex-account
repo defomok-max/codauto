@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 AUTH_FILE="${CODEX_AUTH_FILE:-$CODEX_HOME/auth.json}"
@@ -9,24 +9,34 @@ ACCOUNTS_DIR="${CODEX_ACCOUNTS_DIR:-$CODEX_HOME/accounts}"
 ACTIVE_FILE="$ACCOUNTS_DIR/.active"
 LOCK_DIR="$ACCOUNTS_DIR/.lock"
 CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_RETRY_DELAY="${CODEX_RETRY_DELAY:-2}"
+
+if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GREEN=$'\033[32m'
+  YELLOW=$'\033[33m'; BLUE=$'\033[34m'; MAGENTA=$'\033[35m'; CYAN=$'\033[36m'; RESET=$'\033[0m'
+else
+  BOLD=''; DIM=''; RED=''; GREEN=''; YELLOW=''; BLUE=''; MAGENTA=''; CYAN=''; RESET=''
+fi
 
 usage() {
-  cat <<'EOF'
-codex-account — менеджер и авто-ротатор аккаунтов Codex CLI.
+  cat <<'HELP'
+codex-account — красивый менеджер и авто-ротатор аккаунтов Codex CLI.
 
 Использование:
-  codex-account save <name>          сохранить текущий ~/.codex/auth.json как аккаунт
-  codex-account switch <name>        переключиться на аккаунт
-  codex-account list                 показать сохранённые аккаунты
-  codex-account current              показать активный аккаунт
-  codex-account menu                 интерактивное меню переключения
-  codex-account run [--] <args...>   запустить Codex и сменить аккаунт при лимите
-  codex-account delete <name>        удалить сохранённый аккаунт
-  codex-account doctor               проверить окружение
+  codex-account                  открыть главное меню
+  codex-account menu             открыть главное меню
+  codex-account add [name]       выполнить codex login и сохранить аккаунт
+  codex-account save <name>      сохранить текущий ~/.codex/auth.json как аккаунт
+  codex-account switch <name>    переключиться на аккаунт
+  codex-account list             показать сохранённые аккаунты
+  codex-account current          показать активный аккаунт
+  codex-account run [--] <args>  запустить Codex и сменить аккаунт при лимите
+  codex-account delete <name>    удалить сохранённый аккаунт
+  codex-account doctor           проверить окружение
 
 Примеры:
-  codex-account save work
-  codex-account save personal
+  codex-account add work
+  codex-account add personal
   codex-account switch work
   codex-account run -- exec "исправь тесты"
 
@@ -36,17 +46,18 @@ codex-account — менеджер и авто-ротатор аккаунтов
   CODEX_ACCOUNTS_DIR  каталог профилей, по умолчанию $CODEX_HOME/accounts
   CODEX_BIN           бинарь Codex, по умолчанию codex
   CODEX_RETRY_DELAY   пауза между аккаунтами в секундах, по умолчанию 2
-EOF
+  NO_COLOR=1          выключить цвета
+HELP
 }
 
 die() {
-  printf 'Ошибка: %s\n' "$*" >&2
+  printf '%sОшибка:%s %s\n' "$RED" "$RESET" "$*" >&2
   exit 1
 }
 
-info() {
-  printf '%s\n' "$*" >&2
-}
+ok() { printf '%s✓%s %s\n' "$GREEN" "$RESET" "$*" >&2; }
+warn() { printf '%s!%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+note() { printf '%s›%s %s\n' "$CYAN" "$RESET" "$*" >&2; }
 
 init_dirs() {
   mkdir -p "$ACCOUNTS_DIR"
@@ -58,9 +69,7 @@ with_lock() {
   local waited=0
   until mkdir "$LOCK_DIR" 2>/dev/null; do
     waited=$((waited + 1))
-    if (( waited > 30 )); then
-      die "не удалось получить lock $LOCK_DIR"
-    fi
+    (( waited <= 30 )) || die "не удалось получить lock $LOCK_DIR"
     sleep 1
   done
   trap 'rm -rf "$LOCK_DIR"' EXIT
@@ -71,24 +80,41 @@ release_lock() {
   trap - EXIT
 }
 
+pause() {
+  [[ -t 0 ]] || return 0
+  printf '\n%sНажмите Enter, чтобы продолжить...%s' "$DIM" "$RESET" >&2
+  read -r _ || true
+}
+
+prompt() {
+  local label="$1" default="${2:-}" value
+  if [[ -n "$default" ]]; then
+    printf '%s%s%s [%s]: ' "$BOLD" "$label" "$RESET" "$default" >&2
+  else
+    printf '%s%s%s: ' "$BOLD" "$label" "$RESET" >&2
+  fi
+  read -r value
+  printf '%s' "${value:-$default}"
+}
+
+confirm() {
+  local question="$1" answer
+  printf '%s%s%s [y/N]: ' "$BOLD" "$question" "$RESET" >&2
+  read -r answer
+  [[ "$answer" =~ ^[YyДд]$ ]]
+}
+
 validate_name() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "укажите имя аккаунта"
   [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "имя может содержать только A-Z, a-z, 0-9, точку, подчёркивание и дефис"
 }
 
-profile_auth_file() {
-  local name="$1"
-  printf '%s/%s/auth.json' "$ACCOUNTS_DIR" "$name"
-}
-
-profile_dir() {
-  local name="$1"
-  printf '%s/%s' "$ACCOUNTS_DIR" "$name"
-}
+profile_dir() { printf '%s/%s' "$ACCOUNTS_DIR" "$1"; }
+profile_auth_file() { printf '%s/%s/auth.json' "$ACCOUNTS_DIR" "$1"; }
 
 ensure_auth_exists() {
-  [[ -f "$AUTH_FILE" ]] || die "не найден $AUTH_FILE. Сначала войдите в Codex CLI: $CODEX_BIN login"
+  [[ -f "$AUTH_FILE" ]] || die "не найден $AUTH_FILE. Сначала войдите: $CODEX_BIN login"
 }
 
 ensure_profile_exists() {
@@ -101,6 +127,8 @@ account_names() {
   find "$ACCOUNTS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.lock' -printf '%f\n' | sort
 }
 
+account_count() { account_names | wc -l | tr -d ' '; }
+
 current_account() {
   if [[ -f "$ACTIVE_FILE" ]]; then
     cat "$ACTIVE_FILE"
@@ -109,18 +137,32 @@ current_account() {
   fi
 }
 
+draw_header() {
+  clear 2>/dev/null || true
+  local active count auth_state
+  active="$(current_account)"
+  count="$(account_count)"
+  auth_state="missing"
+  [[ -f "$AUTH_FILE" ]] && auth_state="ok"
+
+  printf '%s╭──────────────────────────────────────────────╮%s\n' "$CYAN" "$RESET"
+  printf '%s│%s %sCodex Account Switcher%s %s v%-6s             %s│%s\n' "$CYAN" "$RESET" "$BOLD" "$RESET" "$MAGENTA" "$VERSION" "$CYAN" "$RESET"
+  printf '%s├──────────────────────────────────────────────┤%s\n' "$CYAN" "$RESET"
+  printf '%s│%s Активный: %-18s Аккаунтов: %-5s %s│%s\n' "$CYAN" "$RESET" "$active" "$count" "$CYAN" "$RESET"
+  printf '%s│%s auth.json: %-17s Codex: %-8s %s│%s\n' "$CYAN" "$RESET" "$auth_state" "$CODEX_BIN" "$CYAN" "$RESET"
+  printf '%s╰──────────────────────────────────────────────╯%s\n' "$CYAN" "$RESET"
+}
+
 save_account() {
-  local name="$1"
+  local name="$1" dir auth tmp
   validate_name "$name"
   ensure_auth_exists
   with_lock
 
-  local dir auth tmp
   dir="$(profile_dir "$name")"
   auth="$(profile_auth_file "$name")"
   mkdir -p "$dir"
   chmod 700 "$dir"
-
   tmp="$auth.tmp.$$"
   cp "$AUTH_FILE" "$tmp"
   chmod 600 "$tmp"
@@ -128,17 +170,27 @@ save_account() {
   printf '%s\n' "$name" > "$ACTIVE_FILE"
   chmod 600 "$ACTIVE_FILE"
   release_lock
-  info "Сохранён аккаунт: $name"
+  ok "Сохранён аккаунт: $name"
+}
+
+add_account() {
+  local name="${1:-}"
+  command -v "$CODEX_BIN" >/dev/null 2>&1 || die "не найден бинарь Codex: $CODEX_BIN"
+  [[ -n "$name" ]] || name="$(prompt 'Имя нового аккаунта' '')"
+  validate_name "$name"
+
+  note "Сейчас откроется '$CODEX_BIN login'. Войдите в нужный аккаунт Codex."
+  "$CODEX_BIN" login
+  save_account "$name"
 }
 
 switch_account() {
-  local name="$1"
+  local name="$1" backup tmp ts
   validate_name "$name"
   ensure_profile_exists "$name"
   with_lock
 
   mkdir -p "$(dirname "$AUTH_FILE")"
-  local backup tmp ts
   ts="$(date +%Y%m%d-%H%M%S)"
   if [[ -f "$AUTH_FILE" ]]; then
     backup="$AUTH_FILE.backup-$ts"
@@ -153,7 +205,7 @@ switch_account() {
   printf '%s\n' "$name" > "$ACTIVE_FILE"
   chmod 600 "$ACTIVE_FILE"
   release_lock
-  info "Активный аккаунт: $name"
+  ok "Активный аккаунт: $name"
 }
 
 list_accounts() {
@@ -166,7 +218,7 @@ list_accounts() {
     printf '%s %s\n' "$marker" "$name"
     count=$((count + 1))
   done < <(account_names)
-  (( count > 0 )) || info "Нет сохранённых аккаунтов. Используйте: codex-account save <name>"
+  (( count > 0 )) || warn "Нет сохранённых аккаунтов. Используйте: codex-account add <name>"
 }
 
 delete_account() {
@@ -179,29 +231,59 @@ delete_account() {
     rm -f "$ACTIVE_FILE"
   fi
   release_lock
-  info "Удалён аккаунт: $name"
+  ok "Удалён аккаунт: $name"
 }
 
-menu() {
-  init_dirs
+pick_account() {
+  local title="$1" names active i choice
   mapfile -t names < <(account_names)
   (( ${#names[@]} > 0 )) || die "нет сохранённых аккаунтов"
-
-  local active i choice
   active="$(current_account)"
-  printf 'Аккаунты Codex:\n' >&2
+
+  printf '\n%s%s%s\n' "$BOLD" "$title" "$RESET" >&2
   for i in "${!names[@]}"; do
     if [[ "${names[$i]}" == "$active" ]]; then
-      printf '  %d) %s *\n' "$((i + 1))" "${names[$i]}" >&2
+      printf '  %s%2d)%s %s %sactive%s\n' "$GREEN" "$((i + 1))" "$RESET" "${names[$i]}" "$DIM" "$RESET" >&2
     else
-      printf '  %d) %s\n' "$((i + 1))" "${names[$i]}" >&2
+      printf '  %s%2d)%s %s\n' "$CYAN" "$((i + 1))" "$RESET" "${names[$i]}" >&2
     fi
   done
-  printf 'Выберите аккаунт: ' >&2
+  printf '  %s 0)%s Назад\n' "$DIM" "$RESET" >&2
+  printf '\nВыбор: ' >&2
   read -r choice
+  [[ "$choice" == "0" ]] && return 1
   [[ "$choice" =~ ^[0-9]+$ ]] || die "нужно число"
   (( choice >= 1 && choice <= ${#names[@]} )) || die "нет такого пункта"
-  switch_account "${names[$((choice - 1))]}"
+  printf '%s' "${names[$((choice - 1))]}"
+}
+
+switch_menu() {
+  local name
+  name="$(pick_account 'Выберите аккаунт для переключения')" || return 0
+  switch_account "$name"
+}
+
+delete_menu() {
+  local name
+  name="$(pick_account 'Выберите аккаунт для удаления')" || return 0
+  confirm "Удалить аккаунт '$name'?" && delete_account "$name" || warn "Удаление отменено"
+}
+
+save_current_menu() {
+  local name
+  name="$(prompt 'Имя аккаунта для текущего auth.json' '')"
+  save_account "$name"
+}
+
+run_menu() {
+  local args
+  printf '%sКоманда Codex%s\n' "$BOLD" "$RESET" >&2
+  printf '%sПример: exec "исправь тесты"%s\n' "$DIM" "$RESET" >&2
+  args="$(prompt 'Аргументы после codex' '')"
+  [[ -n "$args" ]] || die "команда не указана"
+  # shellcheck disable=SC2206
+  local parts=( $args )
+  run_with_rotation "${parts[@]}"
 }
 
 is_rotation_error() {
@@ -211,8 +293,7 @@ is_rotation_error() {
 
 run_with_rotation() {
   init_dirs
-  local delay names name attempt total log status
-  delay="${CODEX_RETRY_DELAY:-2}"
+  local names name attempt total log status
   mapfile -t names < <(account_names)
   (( ${#names[@]} > 0 )) || die "нет сохранённых аккаунтов"
 
@@ -226,7 +307,7 @@ run_with_rotation() {
   for name in "${names[@]}"; do
     attempt=$((attempt + 1))
     switch_account "$name" >/dev/null
-    info "[$attempt/$total] Codex аккаунт: $name"
+    note "[$attempt/$total] Codex аккаунт: $name"
 
     log="$(mktemp)"
     set +e
@@ -236,13 +317,14 @@ run_with_rotation() {
 
     if (( status == 0 )); then
       rm -f "$log"
+      ok "Команда выполнена на аккаунте: $name"
       return 0
     fi
 
     if is_rotation_error "$log" && (( attempt < total )); then
-      info "Похоже на лимит. Переключаю аккаунт через ${delay}s..."
+      warn "Похоже на лимит. Переключаю аккаунт через ${CODEX_RETRY_DELAY}s..."
       rm -f "$log"
-      sleep "$delay"
+      sleep "$CODEX_RETRY_DELAY"
       continue
     fi
 
@@ -264,20 +346,50 @@ doctor() {
     printf ' (not found)\n'
   fi
   printf 'ACTIVE: %s\n' "$(current_account)"
-  printf 'ACCOUNTS: %s\n' "$(account_names | wc -l | tr -d ' ')"
+  printf 'ACCOUNTS: %s\n' "$(account_count)"
+}
+
+main_menu() {
+  local choice
+  while true; do
+    draw_header
+    printf '\n'
+    printf '  %s1)%s Добавить аккаунт через codex login\n' "$CYAN" "$RESET" >&2
+    printf '  %s2)%s Сохранить текущий auth.json как аккаунт\n' "$CYAN" "$RESET" >&2
+    printf '  %s3)%s Переключить аккаунт\n' "$CYAN" "$RESET" >&2
+    printf '  %s4)%s Запустить Codex с авто-ротацией\n' "$CYAN" "$RESET" >&2
+    printf '  %s5)%s Показать аккаунты\n' "$CYAN" "$RESET" >&2
+    printf '  %s6)%s Удалить аккаунт\n' "$CYAN" "$RESET" >&2
+    printf '  %s7)%s Диагностика\n' "$CYAN" "$RESET" >&2
+    printf '  %s0)%s Выход\n\n' "$DIM" "$RESET" >&2
+    printf 'Выбор: ' >&2
+    read -r choice || exit 0
+
+    case "$choice" in
+      1) add_account; pause ;;
+      2) save_current_menu; pause ;;
+      3) switch_menu; pause ;;
+      4) run_menu; pause ;;
+      5) list_accounts; pause ;;
+      6) delete_menu; pause ;;
+      7) doctor; pause ;;
+      0|q|quit|exit) exit 0 ;;
+      *) warn "нет такого пункта"; pause ;;
+    esac
+  done
 }
 
 main() {
-  local cmd="${1:-}"
-  [[ -n "$cmd" ]] || { usage; exit 0; }
-  shift || true
+  local cmd="${1:-menu}"
+  [[ $# -gt 0 ]] && shift || true
 
   case "$cmd" in
+    add) add_account "${1:-}" ;;
     save) save_account "${1:-}" ;;
     switch|use) switch_account "${1:-}" ;;
     list|ls) list_accounts ;;
     current|status) current_account ;;
-    menu) menu ;;
+    menu) main_menu ;;
     run) run_with_rotation "$@" ;;
     delete|rm) delete_account "${1:-}" ;;
     doctor) doctor ;;

@@ -1,8 +1,16 @@
 # codauto
 
-Удобный скрипт для переключения и авто-ротации аккаунтов Codex CLI без ручного копирования `~/.codex/auth.json`.
+Красивый CLI/TUI-скрипт для переключения и авто-ротации аккаунтов Codex CLI без ручного копирования `~/.codex/auth.json`.
 
 ## Установка
+
+```bash
+tar -xzf codex-account-manager.tar.gz
+cd codex-account-manager
+./install.sh
+```
+
+Либо вручную:
 
 ```bash
 chmod +x ./codex-account
@@ -11,18 +19,26 @@ sudo cp ./codex-account /usr/local/bin/codex-account
 
 ## Быстрый старт
 
-1. Войдите в первый аккаунт Codex:
+Откройте красивое меню:
+
+```bash
+codex-account
+```
+
+В меню доступны: добавить аккаунт через `codex login`, сохранить текущий `auth.json`, переключиться, удалить аккаунт, запустить Codex с авто-ротацией и диагностика.
+
+Можно пользоваться и командами напрямую.
+
+1. Добавьте первый аккаунт Codex:
 
    ```bash
-   codex login
-   codex-account save work
+   codex-account add work
    ```
 
-2. Войдите во второй аккаунт и сохраните его:
+2. Добавьте второй аккаунт:
 
    ```bash
-   codex login
-   codex-account save personal
+   codex-account add personal
    ```
 
 3. Переключайтесь вручную:
@@ -44,14 +60,16 @@ sudo cp ./codex-account /usr/local/bin/codex-account
 ## Команды
 
 ```text
-codex-account save <name>          сохранить текущий ~/.codex/auth.json как аккаунт
-codex-account switch <name>        переключиться на аккаунт
-codex-account list                 показать сохранённые аккаунты
-codex-account current              показать активный аккаунт
-codex-account menu                 интерактивное меню переключения
-codex-account run [--] <args...>   запустить Codex и сменить аккаунт при лимите
-codex-account delete <name>        удалить сохранённый аккаунт
-codex-account doctor               проверить окружение
+codex-account                  открыть главное меню
+codex-account menu             открыть главное меню
+codex-account add [name]       выполнить codex login и сохранить аккаунт
+codex-account save <name>      сохранить текущий ~/.codex/auth.json как аккаунт
+codex-account switch <name>    переключиться на аккаунт
+codex-account list             показать сохранённые аккаунты
+codex-account current          показать активный аккаунт
+codex-account run [--] <args>  запустить Codex и сменить аккаунт при лимите
+codex-account delete <name>    удалить сохранённый аккаунт
+codex-account doctor           проверить окружение
 ```
 
 ## Переменные окружения
@@ -62,6 +80,7 @@ CODEX_AUTH_FILE     файл авторизации, по умолчанию $CO
 CODEX_ACCOUNTS_DIR  каталог профилей, по умолчанию $CODEX_HOME/accounts
 CODEX_BIN           бинарь Codex, по умолчанию codex
 CODEX_RETRY_DELAY   пауза между аккаунтами в секундах, по умолчанию 2
+NO_COLOR=1          выключить цвета
 ```
 
-Скрипт не печатает содержимое токенов, хранит профили в отдельных директориях и выставляет права `600` на файлы авторизации.
+Скрипт не печатает содержимое токенов, хранит профили в отдельных директориях, выставляет права `600` на файлы авторизации и делает backup текущего `auth.json` перед переключением.
